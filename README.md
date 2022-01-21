@@ -3,17 +3,20 @@ Converts a URC from the Excel FRM tool and saves as DSS time series
 
 # Running the Tool
 
-The easiest way to run this tool is by running the 'excel_urc_to_dss.bat' file.
+The easiest way to run this tool is by running the 'run_main.bat' file.
 
 This tool runs using R software bundle.  A pre-packaged version of all
   necessary sofware to run the tool is provided in the resources folder:
   
   R 4.0.3 with dssrip package for DSS read/write
   RStudio
-  Java
+  DSSVue (with Java)
   
 The tool may also be ran by loading the main.R script into Rstudio (using
-  the provided R v4.0.3 with dssrip package), and sourcing the script.
+  the provided R v4.0.3 with dssrip package), and sourcing the script.  You 
+  will need to select the provided version of R with the dssrip package
+  to enable read/write of DSS files.  This can be done in RStudio be
+  selecting Tools > GLobal Options
   
 The default behavior of the tool is to process all tabs corresponding to
   months prior to now.  This behavior can be overriden by setting the
@@ -41,6 +44,7 @@ Anticipated raw URCs in Excel (as text all on one column):
 # Configuration
  
  The main.R script allows you to configure which water year to read
-   for the URCs.  By default, the current water year will be used.
+   for the URCs.  By default, the current water year will be used
+   and only months prior to now will be converted to DSS URCs.
  
  

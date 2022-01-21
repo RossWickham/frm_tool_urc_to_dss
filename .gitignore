@@ -1,4 +1,5 @@
-
+# Ignore DSS files
+*.dss
 
 # R and java installs
 /resources/

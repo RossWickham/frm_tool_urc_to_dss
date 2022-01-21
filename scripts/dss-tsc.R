@@ -1,6 +1,46 @@
 #DSS - Time Series Container functions
 
+## used to help with introspection on Java Objects
+sigConversions = list(boolean="Z", byte="B", char="C", 
+                      short="T", void="V", int="I", 
+                      long="J", float="F", double="D")
+fieldsDF <- function(jObject){
+  require(plyr)
+  fields = ldply(.jfields(jObject), function(x) data.frame(FULLNAME=x, 
+                                                           SHORTNAME=last(str_split(x, fixed("."))[[1]]), 
+                                                           CLASS=str_split(x, fixed(" "))[[1]][2], 
+                                                           stringsAsFactors=FALSE))
+  fields$SIGNATURE = llply(fields$CLASS, function(x){
+    out = str_replace_all(x, "\\[\\]", "")
+    if(out %in% names(sigConversions)){
+      out = sigConversions[[out]]
+    } else {
+      out = paste0("L", str_replace_all(out, fixed("."), "/"), ";")
+    }
+    ## If vector, add [
+    if(grepl(fixed("\\[\\]"), x)){
+      out = paste0("[", out)
+    }
+    return(out)
+  })
+  return(fields)
+}
 
+
+# javaObjs = new.env()
+# assign("tscFieldsDF", fieldsDF(.jnew("hec/io/TimeSeriesContainer")), javaObjs)
+# assign("pdcFieldsDF", fieldsDF(.jnew("hec/io/PairedDataContainer")), javaObjs)
+# assign("hecJavaObjectsDB", javaObjs, envir=parent.env(environment()))
+
+TSC_TYPES = c("INST-VAL", "INST-CUM", "PER-AVER", "PER-CUM")
+minutes = c(1,2,3,4,5,6,10,12,15,20,30)
+hours = c(1,2,3,4,6,8,12)
+TSC_INTERVALS = c(minutes, 60*hours, 60*24*c(1,7,10,15,30,365), rep(0,5))
+## Irregular appears to have interval of 0, not -1
+names(TSC_INTERVALS) = c(paste0(minutes, "MIN"),
+                         paste0(hours, "HOUR"),
+                         "1DAY","1WEEK","TRI-MONTH","SEMI-MONTH", "1MON","1YEAR",
+                         paste0("IR-",c("DAY","MON","YEAR","DECADE","CENTURY")))
 
 ### Load ------------------------------------------------------------------------------------------
 
@@ -353,14 +393,109 @@ extractTSCbyRegEx <- function(pathRegEx, dssFileName){
 
 
 
+xts.to.tsc <- function(tsObject, ..., ePart=NULL, interval=NULL, fillData=FALSE, protoTSC=NULL){
+  ## Fill empty time slots in tsObject
+  times = as.POSIXct(index(tsObject))
+  deltas =  diff(as.integer(times)/60)
+  if(!is.null(ePart)){
+    interval = TSC_INTERVALS[ePart]
+  } else {
+    ePart = names(TSC_INTERVALS[TSC_INTERVALS == interval])[1] # TSC_INTERVALS[[as.character(metadata$interval)]] 
+  }
+  if(is.null(interval)){
+    if(max(deltas) <= 25*3600){ ## Less than one day (25 for DST/StdT change), we can count on this to be pretty accurate
+      interval = deltat(tsObject)/60
+    } else {
+      if(any(TSC_INTERVALS %in% deltas)){
+        interval = TSC_INTERVALS[TSC_INTERVALS %in% deltas][1]
+      } else {
+        interval = 0
+      }  
+    }
+  }
+  if(fillData & interval > 0 & interval < 25*3600){
+    fullTimes = seq(min(times), max(times), by=deltat(tsObject))
+    blankTimes = fullTimes[!(fullTimes %in% times)]
+    empties = xts(rep(J("hec/script/Constants")$UNDEFINED, length(blankTimes)), order.by=blankTimes)
+    colnames(empties) = colnames(tsObject)
+    tsObject = rbind(tsObject, empties)
+  }
+  ## Configure slots for TimeSeriesContainer object
+  times = as.integer(index(tsObject))/60 + 2209075200/60
+  values = as.numeric(tsObject)
+  metadata = list(
+    times = .jarray(as.integer(times), contents.class="java/lang/Integer"), #, as.integer(times)), new.class="java/lang/Integer")
+    values = .jarray(values, contents.class="java/lang/Double"),
+    endTime = max(times),
+    startTime = min(times),
+    numberValues = length(values),
+    storedAsdoubles = TRUE,
+    modified=FALSE,
+    fileName="",
+    ...
+  )
+  metadata$interval = interval
+  
+  dssMetadata = attr(tsObject, "dssMetadata")
+  for(mdName in colnames(dssMetadata)){
+    if(mdName %in% names(metadata)){
+      next
+    }
+    #if(any(dssMetadata[[mdName]] != first(dssMetadata[[mdName]]))){
+    #  warning(sprintf("Not all metadata matches for %s", mdName))
+    #}
+    metadata[[mdName]] = first(dssMetadata[[mdName]])
+  }
+  ## TODO: pull from protoTSC if required
+  
+  dPart = paste0("01JAN", year(first(index(tsObject))))
+  metadata$fullName = paste("", metadata$watershed, metadata$location, metadata$parameter, dPart, ePart, metadata$version, "", sep="/")
+  tsc = .jnew("hec/io/TimeSeriesContainer")
+  # tscFieldsDF = get("tscFieldsDF", envir=hecJavaObjectsDB)
+  tscFieldsDF = fieldsDF(.jnew("hec/io/TimeSeriesContainer"))
+  for(n in names(metadata)){
+    #print(sprintf("%s:", n))
+    #print(metadata[[n]])
+    writeVal = metadata[[n]]
+    if(is.na(writeVal) | writeVal == ""){
+      #print("Value is NA, not writing.")
+      next
+    }
+    if(is.factor(writeVal)){
+      writeVal = as.character(writeVal)
+    }
+    if(tscFieldsDF$CLASS[tscFieldsDF$SHORTNAME == n] %in% c("int")){
+      #print("Converting to integer.")
+      writeVal = as.integer(writeVal)
+    }
+    .jfield(tsc, n) = writeVal
+  }
+  return(tsc)
+}
+
+
 ### Save ----------
 
-dfToTSC <- function(path, inDF){
+dfToDailyTSC <- function(path, inDF, units = "ft", type = "INST-VAL"){
   # Converts the standard date, event, value
   #   dataframe into a tsc object to save using dssFile$put
   cat("\n",path)
+  names(inDF) <- c("date", "value")
+  
+  
+  ### CONTINUE HERE -----------------------------------------------------------
+  # Time needs to be in minues since "1899-12-31 00:00"
+  
+  # inDF$date <- as.POSIXct(inDF$date)
+  # hour(inDF$date) <- 24
   tsObject <- xts(x = inDF[,c("value")], order.by = inDF$date)
-  tsc <- xts.to.tsc(tsObject = tsObject)
+  
+  
+  
+  suppressWarnings({
+    tsc <- xts.to.tsc(tsObject = tsObject, ePart = "1DAY")
+  })
+  
   pathParts <- unlist(Map(getPathPart,list(path),c("a","b","c","e","f")))
   tsc$watershed <- pathParts[1]
   tsc$location <- pathParts[2]
@@ -368,6 +503,8 @@ dfToTSC <- function(path, inDF){
   tsc$version <- pathParts[5]
   tsc$fullName <- sprintf("/%s/%s/%s//%s/%s/",
                           pathParts[1],pathParts[2],pathParts[3],pathParts[4],pathParts[5])
+  tsc$type <- type
+  tsc$units <- units
   tsc
 }
 

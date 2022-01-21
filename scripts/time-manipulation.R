@@ -1,5 +1,13 @@
 # time_handling
 
+#' Returns the integer water year given vector of either Date or
+#'   POSIXct type
+wateryear <- function(dates = Sys.Date()){
+  library(lubridate)
+  wy <- year(dates)
+  wy[month(dates) >= 10] <- wy[month(dates) >= 10] + 1
+  wy
+}
 
 convertDatesToSameWY <- function(dates, wy = 3001){
   year(dates) <- wy

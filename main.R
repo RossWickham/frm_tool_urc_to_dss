@@ -6,32 +6,25 @@
 #'
 #'
 
-#'
-#' This script establishes Java settings required to use the dssrip package
-#'
+suppressPackageStartupMessages({
+  # Source utility scripts
+  source("configure_dssrip.R")
+  dir("scripts", pattern="*.R", full.names = T) %>%
+    map(source)
+  library(lubridate)
+  library(openxlsx)
+  library(tidyverse)
+})
 
-# Java base folder relative to main project directory
-baseJavaDir = "resources\\java64"
 
-# Configure Java settings for dssrip
-options(dss_location=baseJavaDir )
-options(dss_jre_location= paste0(baseJavaDir ,"\\java") )
-Sys.setenv(JAVA_HOME= paste0(baseJavaDir, "\\java") )
 
-# source("configure_java.R")
-
-# Load packages
-# library(dssrip)
-library(openxlsx)
-library(tidyverse)
-
-# Source utility scripts
-dir("scripts", pattern="*.R", full.names = T) %>%
-  map(source)
+# dummy <- 
 
 ### Config --------------------------------------------------------------------
 
-# Which water year are we using
+# Which water year are we using - must have a corresponding
+#   file in the urcDir (e.g., if wy = 2022, file <urcDir>/2022.xlsx
+#   must exist)
 wy <- wateryear()
 
 # Directory containing URC Excel files
@@ -39,6 +32,7 @@ urcDir <- "urc_tables"
 
 # Directory for output DSS
 dssDir <- "dss_output"
+dssFileName <- "urcs.dss"
 
 # Name of the Excel file
 excelFileName <- sprintf("%s/%g.xlsx", urcDir, wy)
@@ -56,14 +50,7 @@ mcdbElevStor_NGVD29 <- read_csv("config/mcdb_elev_stor.csv")
 
 
 
-#' Returns the integer water year given vector of either Date or
-#'   POSIXct type
-wateryear <- function(dates = Sys.Date()){
-  library(lubridate)
-  wy <- year(dates)
-  wy[month(dates) >= 10] <- wy[month(dates) >= 10] + 1
-  wy
-}
+
 
 getMonthsToRead <- function(processAllMonths = F){
   if(processAllMonths){
@@ -88,26 +75,36 @@ firstRowToNames <- function(inDf){
   inDf[-1,]
 }
 
+#' Rename columns in dataframe given names and positions
+renameCol <- function(inDf, colName, pos){
+  names(inDf)[pos] <- colName
+  inDf
+}
+
 #' Convert the raw URC inputs as read from Excel to data.frame with
 #'   columns for date and value
 rawURCToDataFrame <- function(rawUrc, wy = wy){
   # Special configuration for URC data
   fwConfig <- fwf_widths(widths = c(5,9,9,rep(8,12)))
-  
-  rawUrc[,] %>%
-    # Interpret as fixed with file
-    read_fwf(col_positions = fwConfig) %>%
-    t() %>% # transpose rows to columns
-    as.data.frame() %>%
-    slice(-2) %>%  # remove units row
-    firstRowToNames() %>%
-    rename(dates = 1) %>% # rename date column
-    # Convert all but date column to numeric
-    mutate_at(.vars = vars(-("dates")), .funs = as.numeric) %>%
-    mutate(
-      dates = as.Date(dates, format = "%b %d"),
-      dates = convertDatesToSameWY(dates, wy = wy)
-    )
+  suppressWarnings({
+    rawUrc[,] %>%
+      # Interpret as fixed with file
+      read_fwf(col_positions = fwConfig) %>%
+      t() %>% # transpose rows to columns
+      as.data.frame() %>%
+      slice(-2) %>%  # remove units row
+      firstRowToNames() %>%
+      renameCol("dates",1) %>% # rename date column
+      # Convert all but date column to numeric
+      mutate_at(.vars = vars(-("dates")), .funs = as.numeric) %>%
+      mutate(
+        dates = as.Date(dates, format = "%b %d")
+      ) %>%
+      mutate(
+        
+        dates = convertDatesToSameWY(dates, wy = wy)
+      )
+  })
 }
 
 convertMicaSpaceToElev_NGVD29 <- function(urcDf,
@@ -115,15 +112,37 @@ convertMicaSpaceToElev_NGVD29 <- function(urcDf,
                                           fullPool_kaf = 20075.475){
   urcDf %>%
     mutate(
-      MCDB = fullPool_kaf - MCDB,
-      MCDB = approx(x = mcdbElevStor_NGVD29$stor_kaf,
-                    y = mcdbElevStor_NGVD29$elev_ngvd29,
-                    xout = MCDB)
+      MCDB = fullPool_kaf - MCDB
+    ) %>%
+    mutate(
+      MCDB = approx(x = mcdbElevStor_NGVD29$stor_af/1000,
+                    y = mcdbElevStor_NGVD29$elev_ft_ngvd29,
+                    xout = MCDB)$y
     )
 }
 
-urcDfToTscs <- function(urcDf){
+#' Form DSS path given the reservoir name and water year and projection month
+formDSSPathNames <- function(resvNames, wy, m){
+  # Fill the resvName, wy, month into the template
+  pathTemplate <- "//%s/ELEV-URC//1DAY/%s-%s/"
+  sprintf(pathTemplate, resvNames, wy, m)
+}
+
+#'
+#' Convert to the URC data.frame to 
+#'
+urcDfToTscs <- function(urcDf, wy, m){
+  # Split each dataframe into a list of data.frames, each with
+  #   a column for the date and project URC values
+  resvNames <-  names(urcDf)[-1]
+  urcPathNames <- formDSSPathNames(resvNames, wy, m)
   
+  # Individual data.frames
+  urcDfs <- resvNames %>%
+    map(function(x) urcDf[, c("dates", x)])
+  
+  # Convert to TSCs
+  urcTSCs <- Map(dfToDailyTSC, path = urcPathNames, inDF = urcDfs)
 }
 
 
@@ -140,32 +159,40 @@ monthsMatchPattern <-
   )
 
 # Load DSS file
-dssFile <-
-  file.path(getwd(), dssDir, "urcs.dss") %>%
-  dssrip::readDSS()
-
 if(!dir.exists(dssDir)) dir.create(dssDir)
+dssFile <-
+  file.path(getwd(), dssDir, dssFileName) %>%
+  opendss()
 
-test <- 
-  # Load Excel file
-  excelFileName %>%
-  openxlsx::loadWorkbook() %>%
-  # Load sheet names (three-letter abbreviation of month)
-  names() %>% 
-  # Restrict only to months of interest
-  str_subset(pattern = monthsMatchPattern) %>%
-  # Load raw Excel contents to list by month (list by month)
-  Map(f = read.xlsx, sheet = ., xlsxFile = list(wb), colNames = list(F)) %>%
-  # Convert each raw URC to data.frame
-  map(rawURCToDataFrame, wy = wy) %>%
-  # Convert Mica space to elevation NGVD29 (list by month)
-  map(convertMicaSpaceToElev_NGVD29) %>%
-  # Convert data.frame to TimeSeriesContainer
-  map(urcDfToTscs, wy = wy) %>%
-  # Have a list (months) of lists (TSCs), unnest by one layer
-  unlist(recursive = F) %>% 
-  # Save to DSS
-  map(dssFile$put)
+tryCatch(
+  {
+    # Load Excel file
+    excelFileName %>%
+      openxlsx::loadWorkbook() %>%
+      # Load sheet names (three-letter abbreviation of month)
+      names() %>% 
+      # Restrict only to months of interest
+      str_subset(pattern = monthsMatchPattern) %>%
+      # Load raw Excel contents to list by month (list by month)
+      Map(f = read.xlsx,
+          sheet = .,
+          xlsxFile = list(excelFileName), colNames = list(F)) %>%
+      # Convert each raw URC to data.frame
+      map(rawURCToDataFrame, wy = wy) %>%
+      # Convert Mica space to elevation NGVD29 (list by month)
+      map(convertMicaSpaceToElev_NGVD29, mcdbElevStor_NGVD29) %>%
+      # Convert data.frame to TimeSeriesContainer
+      Map(urcDfToTscs,urcDf = ., wy = list(wy), m = names(.)) %>%
+      # Have a list (months) of lists (TSCs), unnest by one layer
+      unlist(recursive = F) %>% 
+      # Save to DSS
+      map(dssFile$put)
+  },
+  error = function(e){
+    message(e)
+    dssFile$done()
+  }
+)
 
 
 
