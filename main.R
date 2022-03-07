@@ -84,6 +84,7 @@ renameCol <- function(inDf, colName, pos){
 #' Convert the raw URC inputs as read from Excel to data.frame with
 #'   columns for date and value
 rawURCToDataFrame <- function(rawUrc, wy = wy){
+  if(is.null(rawUrc)) return(NULL)
   # Special configuration for URC data
   fwConfig <- fwf_widths(widths = c(5,9,9,rep(8,12)))
   suppressWarnings({
@@ -179,6 +180,7 @@ tryCatch(
           xlsxFile = list(excelFileName), colNames = list(F)) %>%
       # Convert each raw URC to data.frame
       map(rawURCToDataFrame, wy = wy) %>%
+      compact() %>%
       # Convert Mica space to elevation NGVD29 (list by month)
       map(convertMicaSpaceToElev_NGVD29, mcdbElevStor_NGVD29) %>%
       # Convert data.frame to TimeSeriesContainer
