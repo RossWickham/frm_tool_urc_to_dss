@@ -476,29 +476,30 @@ xts.to.tsc <- function(tsObject, ..., ePart=NULL, interval=NULL, fillData=FALSE,
 
 ### Save ----------
 
-dfToURCTimeseries <- function(path, inDF, units = "ft", type = "INST-VAL"){
+dfToDailyTSC <- function(path, inDF, units = "ft", type = "INST-VAL"){
   # Converts the standard date, event, value
   #   dataframe into a tsc object to save using dssFile$put
   cat("\n",path)
   names(inDF) <- c("date", "value")
   
-  # Time needs to be in seconds since some origin (The 1st water year forecast date in this case)
-  inDF$date <- as.numeric(inDF$date) # The following lines seem to work best as numerics
-  inDF$date <- inDF$date - inDF[1, "date"] + 1 # Index dates to the 1st forecast at +1 (for midnight/24:00)
-  inDF$date <- inDF$date*24*60*60 # Multiply increment from days to seconds
-  inDF$date <- as.POSIXct(inDF$date, origin = sprintf("%s-10-31", wateryear()-1)) # Convert to datetimes for the current water year 
   
+  ### CONTINUE HERE -----------------------------------------------------------
+  # Time needs to be in minues since "1899-12-31 00:00"
+  
+  # inDF$date <- as.POSIXct(inDF$date)
+  # hour(inDF$date) <- 24
   tsObject <- xts(x = inDF[,c("value")], order.by = inDF$date)
   
+  
+  
   suppressWarnings({
-    tsc <- xts.to.tsc(tsObject = tsObject, ePart = "IR-CENTURY") # Changed to IR-CENTURY
+    tsc <- xts.to.tsc(tsObject = tsObject, ePart = "1DAY")
   })
   
   pathParts <- unlist(Map(getPathPart,list(path),c("a","b","c","e","f")))
   tsc$watershed <- pathParts[1]
   tsc$location <- pathParts[2]
   tsc$parameter <- pathParts[3]
-  pathParts[4] <- "IR-CENTURY" # Override this to be IR-CENTURY from 1DAY
   tsc$version <- pathParts[5]
   tsc$fullName <- sprintf("/%s/%s/%s//%s/%s/",
                           pathParts[1],pathParts[2],pathParts[3],pathParts[4],pathParts[5])
@@ -506,7 +507,7 @@ dfToURCTimeseries <- function(path, inDF, units = "ft", type = "INST-VAL"){
   tsc$units <- units
   tsc
 }
-  
+
 saveTSC <- function(tsc, dssFile){
   #dssFile and tsc are the java objects:
   # > str(dssFile)

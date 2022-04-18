@@ -17,9 +17,6 @@ suppressPackageStartupMessages({
 })
 
 
-
-# dummy <- 
-
 ### Config --------------------------------------------------------------------
 
 # Which water year are we using - must have a corresponding
@@ -36,6 +33,7 @@ dssFileName <- "urcs.dss"
 
 # Name of the Excel file
 excelFileName <- sprintf("%s/%g.xlsx", urcDir, wy)
+# excelFileName <- sprintf("urc_tables/2022_test.xlsx", urcDir, wy)
 
 # Should all month tabs in the Excel be processed?
 # If not, default behavior is to process all months prior to now in 
@@ -135,20 +133,62 @@ formDSSPathNames <- function(resvNames, wy, m){
 urcDfToTscs <- function(urcDf, wy, m){
   # Split each dataframe into a list of data.frames, each with
   #   a column for the date and project URC values
-  resvNames <-  names(urcDf)[-1]
-  urcPathNames <- formDSSPathNames(resvNames, wy, m)
-  
-  # Individual data.frames
-  urcDfs <- resvNames %>%
-    map(function(x) urcDf[, c("dates", x)])
-  
-  # Convert to TSCs
-  urcTSCs <- Map(dfToDailyTSC, path = urcPathNames, inDF = urcDfs)
+  tryCatch({
+    
+    resvNames <-  names(urcDf)[-1]
+    urcPathNames <- formDSSPathNames(resvNames, wy, m)
+    
+    # Individual data.frames
+    urcDfs <- resvNames %>%
+      map(function(x) urcDf[, c("dates", x)])
+    
+    # Convert to TSCs
+    urcTSCs <- Map(dfToURCTimeseries, path = urcPathNames, inDF = urcDfs)
+  },
+  error = function(e){
+    message(e)
+    warning(sprintf("\nurcDfToTscs:\tError processing wy %s, month = %s",
+                    as.character(wy), as.character(m)))
+    return(NULL)
+  })
 }
 
+dfToURCTimeseries <- function(path, inDF, units = "ft", type = "INST-VAL"){
+  # Converts the standard date, event, value
+  #   dataframe into a tsc object to save using dssFile$put
+  cat("\n",path)
+  names(inDF) <- c("date", "value")
+  
+  inDF <- na.omit(inDF)
+  
+  # Time needs to be in seconds since some origin (The 1st water year forecast date in this case)
+  inDF$date <- as.numeric(inDF$date) # The following lines seem to work best as numerics
+  inDF$date <- inDF$date - inDF[1, "date"] + 1 # Index dates to the 1st forecast at +1 (for midnight/24:00)
+  inDF$date <- inDF$date*24*60*60 # Multiply increment from days to seconds
+  inDF$date <- as.POSIXct(inDF$date, origin = sprintf("%s-10-31", wateryear()-1)) # Convert to datetimes for the current water year 
+  
+  tsObject <- xts(x = inDF[,c("value")], order.by = inDF$date)
+  
+  suppressWarnings({
+    tsc <- xts.to.tsc(tsObject = tsObject, ePart = "IR-CENTURY") # Changed to IR-CENTURY
+  })
+  
+  pathParts <- unlist(Map(getPathPart,list(path),c("a","b","c","e","f")))
+  tsc$watershed <- pathParts[1]
+  tsc$location <- pathParts[2]
+  tsc$parameter <- pathParts[3]
+  pathParts[4] <- "IR-CENTURY" # Override this to be IR-CENTURY from 1DAY
+  tsc$version <- pathParts[5]
+  tsc$fullName <- sprintf("/%s/%s/%s//%s/%s/",
+                          pathParts[1],pathParts[2],pathParts[3],pathParts[4],pathParts[5])
+  tsc$type <- type
+  tsc$units <- units
+  tsc
+}
 
 ### Main ----------------------------------------------------------------------
 
+cat(sprintf("\n\nLoading URCs from Excel file:\t%s\n\n", excelFileName))
 
 # Determine which month to load given 'processAllMonths' flag, and convert
 #   to a string for matching against: needs to be a single element string of
@@ -185,17 +225,15 @@ tryCatch(
       map(convertMicaSpaceToElev_NGVD29, mcdbElevStor_NGVD29) %>%
       # Convert data.frame to TimeSeriesContainer
       Map(urcDfToTscs,urcDf = ., wy = list(wy), m = names(.)) %>%
+      compact() %>%
       # Have a list (months) of lists (TSCs), unnest by one layer
       unlist(recursive = F) %>% 
       # Save to DSS
       map(dssFile$put)
+    NULL
   },
   error = function(e){
     message(e)
     dssFile$done()
   }
 )
-
-
-
-
